@@ -2,15 +2,34 @@ import hashlib
 import json
 import os
 import tempfile
-from subprocess import check_call
+import subprocess
+import sys
+
 from bs4 import BeautifulSoup
 from bs4.element import Comment, NavigableString, CData
 from .simple_tree import simple_tree_from_html_string
 from .extractors import extract_date, extract_title
 from .simplifiers import normalise_text
+from .utils import chdir
+
+
+def have_node():
+    """Check that we can run node and have a new enough version """
+    try:
+        cp = subprocess.run(['node', '-v'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        returncode = cp.returncode
+    except FileNotFoundError:
+        return False
+
+    major = int(cp.stdout.split(b'.')[0].lstrip(b'v'))
+    return returncode == 0 and major >= 10
 
 
 def simple_json_from_html_string(html, content_digests=False, node_indexes=False, use_readability=False):
+    if use_readability and not have_node():
+        print("Warning: node executable not found, reverting to pure-Python mode. Install Node.js v10 or newer to use Readability.js.", file=sys.stderr)
+        use_readability = False
+
     if use_readability:
         temp_dir = tempfile.gettempdir()
         # Write input HTML to temporary file so it is available to the node.js script
@@ -20,13 +39,13 @@ def simple_json_from_html_string(html, content_digests=False, node_indexes=False
 
         # Call Mozilla's Readability.js Readability.parse() function via node, writing output to a temporary file
         article_json_path = os.path.join(temp_dir, "article.json")
-        parse_script_path = os.path.join(os.path.dirname(__file__), "..", "javascript", "ExtractArticle.js")
-        check_call(["node", parse_script_path, "-i", html_path, "-o", article_json_path])
+        jsdir = os.path.join(os.path.dirname(__file__), 'javascript')
+        with chdir(jsdir):
+            subprocess.check_call(["node", "ExtractArticle.js", "-i", html_path, "-o", article_json_path])
 
         # Read output of call to Readability.parse() from JSON file and return as Python dictionary
         with open(article_json_path) as f:
             input_json = json.loads(f.read())
-
     else:
         input_json = {
             "title": extract_title(html),
@@ -67,10 +86,10 @@ def extract_text_blocks_as_plain_text(paragraph_html):
     # Select all lists
     lists = soup.find_all(['ul', 'ol'])
     # Prefix text in all list items with "* " and make lists paragraphs
-    for l in lists:
-        plain_items = "".join(list(filter(None, [plain_text_leaf_node(li)["text"] for li in l.find_all('li')])))
-        l.string = plain_items
-        l.name = "p"
+    for thelist in lists:
+        plain_items = "".join(list(filter(None, [plain_text_leaf_node(li)["text"] for li in thelist.find_all('li')])))
+        thelist.string = plain_items
+        thelist.name = "p"
     # Select all text blocks
     text_blocks = [s.parent for s in soup.find_all(string=True)]
     text_blocks = [plain_text_leaf_node(block) for block in text_blocks]
